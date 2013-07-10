@@ -78,6 +78,7 @@ Command-line Options
     Basic options:
       -s, --server=STRING      Memcached server hostname[:port].  Repeat to specify
                                  multiple servers.
+      -b, --binary             Use binary headers instead of ASCII.                      
       -q, --qps=INT            Target aggregate QPS. 0 = peak QPS.  (default=`0')
       -t, --time=INT           Maximum time to run (seconds).  (default=`5')
       -K, --keysize=STRING     Length of memcached keys (distribution).
@@ -88,6 +89,7 @@ Command-line Options
                                  memcached servers are given, this number is
                                  divided by the number of servers.
                                  (default=`10000')
+          --udp                Connect using UDP protocol.       
       -u, --update=FLOAT       Ratio of set:get commands.  (default=`0.0')
     
     Advanced options:

@@ -24,6 +24,7 @@ typedef struct {
   // qps_per_connection
   // iadist
 
+  bool udp;
   double update;
   int time;
   bool loadonly;

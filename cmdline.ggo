@@ -12,7 +12,7 @@ text "\nBasic options:"
 
 option "server" s "Memcached server hostname[:port].  \
 Repeat to specify multiple servers." string multiple
-option "binary" - "Use binary memcached protocol instead of ASCII."
+option "binary" b "Use binary memcached protocol instead of ASCII."
 option "qps" q "Target aggregate QPS. 0 = peak QPS." int default="0"
 option "time" t "Maximum time to run (seconds)." int default="5"
 
@@ -25,6 +25,7 @@ option "records" r "Number of memcached records to use.  \
 If multiple memcached servers are given, this number is divided \
 by the number of servers." int default="10000"
 
+option "udp" - "Use UDP"
 option "update" u "Ratio of set:get commands." float default="0.0"
 
 text "\nAdvanced options:"
@@ -108,4 +109,3 @@ Parameters are not required.  The following distributions are supported:
 [1] Berk Atikoglu et al., Workload Analysis of a Large-Scale Key-Value Store,
     SIGMETRICS 2012
 "
-

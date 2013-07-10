@@ -38,7 +38,7 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CFLAGS = ' -O3 -Wall -g')
+env.Append(CPPFLAGS = ' -O0 -Wall -g')
 #env.Append(CPPFLAGS  = ' -D_GNU_SOURCE -D__STDC_FORMAT_MACROS')
 #env.Append(CPPFLAGS = ' -DUSE_ADAPTIVE_SAMPLER')
 
@@ -53,3 +53,14 @@ if not env['HAVE_POSIX_BARRIER']: # USE_POSIX_BARRIER:
 env.Program(target='mutilate', source=src)
 env.Program(target='gtest', source=['TestGenerator.cc', 'log.cc', 'util.cc',
                                     'Generator.cc'])
+
+# envRelease = Environment()
+# envDebug = Environment()
+# envDebug.Append(CXXFLAGS = ['/DEBUG'])
+
+# targetRelease = envRelease.Program(target = 'mutilate', source = 'mutilate.cc');
+# # This makes the release target the default
+# envRelease.Default(targetRelease)
+
+# targetDebug = envDebug.Program(target = 'mutilate_debug', source = 'mutilate.cc')
+# envDebug.Alias('debug', targetDebug)

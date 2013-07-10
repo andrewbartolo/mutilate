@@ -6,6 +6,7 @@
 #include <event2/event.h>
 #include <event2/thread.h>
 #include <event2/util.h>
+#include <tgmath.h>
 
 #include "config.h"
 
@@ -15,6 +16,8 @@
 #include "mutilate.h"
 #include "binary_protocol.h"
 #include "util.h"
+
+#define UDP_BUF_SIZE 1500
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
@@ -39,14 +42,36 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
   last_tx = last_rx = 0.0;
 
-  bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
-  bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
-  bufferevent_enable(bev, EV_READ | EV_WRITE);
+  if (!options.udp) {
+    bev = bufferevent_socket_new(base, -1, BEV_OPT_CLOSE_ON_FREE);
+    bufferevent_setcb(bev, bev_read_cb, bev_write_cb, bev_event_cb, this);
+    bufferevent_enable(bev, EV_READ | EV_WRITE);
 
-  if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
+    if (bufferevent_socket_connect_hostname(bev, evdns, AF_UNSPEC,
                                           hostname.c_str(),
                                           atoi(port.c_str())))
-    DIE("bufferevent_socket_connect_hostname()");
+      DIE("bufferevent_socket_connect_hostname()");
+  }
+  // TODO: make UDP mode IPvX-agnostic
+  else {
+    evutil_socket_t fd;
+    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+      DIE("socket()");
+    
+    struct sockaddr_in sin;
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(atoi(port.c_str()));
+    if (inet_pton(AF_INET, hostname.c_str(), &sin.sin_addr) <= 0)
+      DIE("pton()");
+    // sin_zero is for byte-padding; should be zeroed
+    memset(&sin.sin_zero, 0, sizeof(sin.sin_zero));
+
+    if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)))
+      DIE("connect()");
+
+    ev = event_new(base, fd, EV_READ | EV_WRITE, udp_event_cb, this);
+    event_add(ev, NULL);
+  }
 
   timer = evtimer_new(base, timer_cb, this);
 }
@@ -57,7 +82,12 @@ Connection::~Connection() {
 
   // FIXME:  W("Drain op_q?");
 
-  bufferevent_free(bev);
+  // bufferevent already set to close on free
+  if (!options.udp) bufferevent_free(bev);
+  else {
+    close(event_get_fd(ev));
+    event_free(ev);
+  }
 
   delete iagen;
   delete keygen;
@@ -131,7 +161,12 @@ void Connection::issue_get(const char* key, double now) {
     bufferevent_write(bev, key, keylen);
     l = 24 + keylen;
   } else {
-    l = evbuffer_add_printf(bufferevent_get_output(bev), "get %s\r\n", key);
+    if (options.udp) {
+      char buf[1025];
+      l = sprintf(&buf[0], "get %s\r\n", key);
+      send(event_get_fd(ev), &buf[0], l, 0);
+    }
+    else l = evbuffer_add_printf(bufferevent_get_output(bev), "get %s\r\n", key);
   }
 
   if (read_state != LOADING) stats.tx_bytes += l;
@@ -162,16 +197,50 @@ void Connection::issue_set(const char* key, const char* value, int length,
                         0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
                         htonl(keylen + 8 + length)};
 
-    bufferevent_write(bev, &h, 32); // With extras
-    bufferevent_write(bev, key, keylen);
-    bufferevent_write(bev, value, length);
+    if (options.udp) {
+      char buf[UDP_BUF_SIZE];      // buffer overflow here?  check for max...
+      memset(buf, 0, 8);   // zero UDP pseudoheader portion
+      buf[5] = 1;          // we want to send only 1 datagram
+      l = 8;
+      memcpy(&buf[8], &h, 32);
+      l += 32;
+      memcpy(&buf[l], key, keylen);
+      l += keylen;
+      memcpy(&buf[l], value, length);
+      l += length;
+
+      send(event_get_fd(ev), &buf, l, 0);
+    }
+    else {
+      bufferevent_write(bev, &h, 32); // With extras
+      bufferevent_write(bev, key, keylen);
+      bufferevent_write(bev, value, length);
+    }
     l = 24 + h.body_len;
-  } else {
-    l = evbuffer_add_printf(bufferevent_get_output(bev),
-                                "set %s 0 0 %d\r\n", key, length);
-    bufferevent_write(bev, value, length);
-    bufferevent_write(bev, "\r\n", 2);
-    l += length + 2;
+  }
+  else {
+    char setHdr[] = "set %s 0 0 %d\r\n";
+    // default data length 200 bytes
+    if (options.udp) {
+
+      char buf[UDP_BUF_SIZE];
+      memset(buf, 0, 8);
+      buf[5] = 1;
+      l = 8 + sprintf(&buf[8], setHdr, key, length);
+      memcpy(&buf[l], value, length);
+      l += length;
+      memcpy(&buf[l], "\r\n", 2);
+      l += 2;
+
+     send(event_get_fd(ev), &buf, l, 0);
+    }
+    else {
+      l = evbuffer_add_printf(bufferevent_get_output(bev),
+                                setHdr, key, length);
+      bufferevent_write(bev, value, length);
+      bufferevent_write(bev, "\r\n", 2);
+      l += length + 2;
+    }
   }
 
   if (read_state != LOADING) stats.tx_bytes += l;
@@ -310,12 +379,13 @@ void Connection::drive_write_machine(double now) {
   }
 }
 
-void Connection::event_callback(short events) {
+void Connection::bev_callback(short events) {
   //  struct timeval now_tv;
   // event_base_gettimeofday_cached(base, &now_tv);
 
   if (events & BEV_EVENT_CONNECTED) {
     D("Connected to %s:%s.", hostname.c_str(), port.c_str());
+
     int fd = bufferevent_getfd(bev);
     if (fd < 0) DIE("bufferevent_getfd");
 
@@ -341,6 +411,13 @@ void Connection::event_callback(short events) {
 }
 
 void Connection::read_callback() {
+  /*TEST TEST TEST */
+  char buff[UDP_BUF_SIZE];
+  memset(buff, 0, UDP_BUF_SIZE);
+  ssize_t recsize = recv(event_get_fd(ev), buff, 16, 0);
+  printf("received %d bytes... string: %s\n", recsize, buff);
+
+
   struct evbuffer *input = bufferevent_get_input(bev);
 #if USE_CACHED_TIME
   struct timeval now_tv;
@@ -559,7 +636,7 @@ void Connection::read_callback() {
  * Tries to consume a binary response (in its entirety) from an evbuffer.
  *
  * @param input evBuffer to read response from
- * @return  true if consumed, false if not enough data in buffer.
+ * @return  true if consumed, false if not enough data in buffer
  */
 bool Connection::consume_binary_response(evbuffer *input) {
   // Read the first 24 bytes as a header
@@ -580,7 +657,7 @@ bool Connection::consume_binary_response(evbuffer *input) {
       stats.get_misses++;
   }
 
-  #define unlikely(x)     __builtin_expect((x),0)
+  #define unlikely(x) __builtin_expect((x),0)
   if (unlikely(h->opcode == CMD_SASL)) {
     if (h->status == RESP_OK) {
       V("SASL authentication succeeded");
@@ -594,13 +671,36 @@ bool Connection::consume_binary_response(evbuffer *input) {
   return true;
 }
 
+void Connection::udp_callback(short events) {
+  /*
+  printf("Got an event on socket [?]:%s%s%s%s\n",
+    (events&EV_TIMEOUT) ? " timeout" : "",
+    (events&EV_READ)    ? " read" : "",
+    (events&EV_WRITE)   ? " write" : "",
+    (events&EV_SIGNAL)  ? " signal" : ""
+    );
+    */
+  if ((events & EV_WRITE) && !(events & EV_READ))
+    D("Connected to %s:%s. (writable)", hostname.c_str(), port.c_str());
+    /* ALSO need to implement SASL for UDP here. */
+    //if (events & BEV_EVENT_CONNECTED) {
+      //D("Connected to %s:%s.", hostname.c_str(), port.c_str());
+  read_state = IDLE;
+
+  /* UDP connections must fire the read callback manually - 
+     for TCP connections, bufferevent has its own read callback */
+  if (events & EV_READ) read_callback();
+
+  event_add(ev, NULL);
+}
+
 void Connection::write_callback() {}
 void Connection::timer_callback() { drive_write_machine(); }
 
 // The follow are C trampolines for libevent callbacks.
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr) {
   Connection* conn = (Connection*) ptr;
-  conn->event_callback(events);
+  conn->bev_callback(events);
 }
 
 void bev_read_cb(struct bufferevent *bev, void *ptr) {
@@ -613,7 +713,12 @@ void bev_write_cb(struct bufferevent *bev, void *ptr) {
   conn->write_callback();
 }
 
-void timer_cb(evutil_socket_t fd, short what, void *ptr) {
+void udp_event_cb(evutil_socket_t fd, short events, void *ptr) {
+  Connection* conn = (Connection*) ptr;
+  conn->udp_callback(events);
+}
+
+void timer_cb(evutil_socket_t fd, short events, void *ptr) {
   Connection* conn = (Connection*) ptr;
   conn->timer_callback();
 }

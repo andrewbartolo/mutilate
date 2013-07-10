@@ -7,6 +7,8 @@
 #include <event2/dns.h>
 #include <event2/event.h>
 #include <event2/util.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
 #include "AdaptiveSampler.h"
 #include "cmdline.h"
@@ -21,6 +23,7 @@ using namespace std;
 void bev_event_cb(struct bufferevent *bev, short events, void *ptr);
 void bev_read_cb(struct bufferevent *bev, void *ptr);
 void bev_write_cb(struct bufferevent *bev, void *ptr);
+void udp_event_cb(evutil_socket_t fd, short what, void *ptr);
 void timer_cb(evutil_socket_t fd, short what, void *ptr);
 
 class Connection {
@@ -73,9 +76,10 @@ public:
   void reset();
   void issue_sasl();
 
-  void event_callback(short events);
+  void bev_callback(short events);
   void read_callback();
   void write_callback();
+  void udp_callback(short events);
   void timer_callback();
   bool consume_binary_response(evbuffer *input);
 
@@ -89,6 +93,8 @@ private:
   struct event_base *base;
   struct evdns_base *evdns;
   struct bufferevent *bev;
+
+  struct event *ev;     // UDP only
 
   struct event *timer;  // Used to control inter-transmission time.
   //  double lambda;

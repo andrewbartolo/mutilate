@@ -430,7 +430,7 @@ int main(int argc, char **argv) {
   //  if (args.keysize_arg < MINIMUM_KEY_LENGTH)
   //    DIE("--keysize must be >= %d", MINIMUM_KEY_LENGTH);
   if (args.connections_arg < 1 || args.connections_arg > MAXIMUM_CONNECTIONS)
-    DIE("--connections must be between [1,%d]", MAXIMUM_CONNECTIONS);
+    DIE("--connections must be in range [1, %d]", MAXIMUM_CONNECTIONS);
   //  if (get_distribution(args.iadist_arg) == -1)
   //    DIE("--iadist invalid: %s", args.iadist_arg);
   if (!args.server_given && !args.agentmode_given)
@@ -824,7 +824,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
   // Wait for all Connections to become IDLE.
   while (1) {
-    // FIXME: If all connections become ready before event_base_loop
+    // FIXME: If all connections become ready before event_base_loopevent
     // is called, this will deadlock.
     event_base_loop(base, EVLOOP_ONCE);
 
@@ -847,7 +847,12 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     while (1) {
       // FIXME: If all connections become ready before event_base_loop
       // is called, this will deadlock.
+
+      // "blocks" (not really blocking) here.
+      // no read event callbacks received; all write
+      printf("first\n");
       event_base_loop(base, EVLOOP_ONCE);
+      printf("second\n");
 
       bool restart = false;
       for (Connection *conn: connections)
@@ -1080,6 +1085,7 @@ void args_to_options(options_t* options) {
   //  options->keysize = args.keysize_arg;
   strcpy(options->valuesize, args.valuesize_arg);
   //  options->valuesize = args.valuesize_arg;
+  options->udp = args.udp_given;
   options->update = args.update_arg;
   options->time = args.time_arg;
   options->loadonly = args.loadonly_given;
@@ -1120,4 +1126,3 @@ facilisis et.)";
     cursor += max;
   }
 }
-
