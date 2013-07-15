@@ -143,7 +143,7 @@ static bool s_send (zmq::socket_t &socket, const std::string &string) {
  * synchronize and finally do the heavy lifting.
  * 
  * [IF WARMUP] -1:  Master <-> Agent: Synchronize
- * [IF WARMUP]  0:  Everyone: RUN for options.warmup seconds.
+ * [IF WARMUP]  0:  Everyone: RUN for options.warmup second.
  * 1. Master <-> Agent: Synchronize
  * 2. Everyone: RUN for options.time seconds.
  * 3. Master -> Agent: Dummy message
@@ -435,6 +435,8 @@ int main(int argc, char **argv) {
   //    DIE("--iadist invalid: %s", args.iadist_arg);
   if (!args.server_given && !args.agentmode_given)
     DIE("--server or --agentmode must be specified.");
+  if (args.udp_given && !args.noload_given)
+    DIE("--udp loading not supported; use --noload");
 
   // TODO: Discover peers, share arguments.
 
@@ -823,18 +825,20 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   }
 
   // Wait for all Connections to become IDLE.
-  while (1) {
-    // FIXME: If all connections become ready before event_base_loopevent
-    // is called, this will deadlock.
-    event_base_loop(base, EVLOOP_ONCE);
+  if (!options.udp) {
+    while (1) {
+      // FIXME: If all connections become ready before event_base_loopevent
+      // is called, this will deadlock.
+      event_base_loop(base, EVLOOP_ONCE);
 
-    bool restart = false;
-    for (Connection *conn: connections)
-      if (conn->read_state != Connection::IDLE)
-        restart = true;
+      bool restart = false;
+      for (Connection *conn: connections)
+        if (conn->read_state != Connection::IDLE)
+          restart = true;
 
-    if (restart) continue;
-    else break;
+      if (restart) continue;
+      else break;
+    }
   }
 
   // Load database on lead connection for each server.
@@ -848,14 +852,10 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       // FIXME: If all connections become ready before event_base_loop
       // is called, this will deadlock.
 
-      // "blocks" (not really blocking) here.
-      // no read event callbacks received; all write
-      printf("first\n");
       event_base_loop(base, EVLOOP_ONCE);
-      printf("second\n");
 
       bool restart = false;
-      for (Connection *conn: connections)
+     for (Connection *conn: connections)
         if (conn->read_state != Connection::IDLE)
           restart = true;
 

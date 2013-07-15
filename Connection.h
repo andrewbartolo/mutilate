@@ -94,7 +94,10 @@ private:
   struct evdns_base *evdns;
   struct bufferevent *bev;
 
-  struct event *ev;     // UDP only
+  struct event *ev;       // UDP only
+  struct evbuffer *read;  // UDP only
+  struct evbuffer *write; // UDP only
+  char udpHdr[8];         // UDP only
 
   struct event *timer;  // Used to control inter-transmission time.
   //  double lambda;

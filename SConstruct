@@ -38,7 +38,7 @@ if not conf.CheckFunc('pthread_barrier_init'):
 
 env = conf.Finish()
 
-env.Append(CPPFLAGS = ' -O0 -Wall -g')
+env.Append(CPPFLAGS = ' -O3 -Wall -g')
 #env.Append(CPPFLAGS  = ' -D_GNU_SOURCE -D__STDC_FORMAT_MACROS')
 #env.Append(CPPFLAGS = ' -DUSE_ADAPTIVE_SAMPLER')
 

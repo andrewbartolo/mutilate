@@ -6,7 +6,6 @@
 #include <event2/event.h>
 #include <event2/thread.h>
 #include <event2/util.h>
-#include <tgmath.h>
 
 #include "config.h"
 
@@ -16,8 +15,6 @@
 #include "mutilate.h"
 #include "binary_protocol.h"
 #include "util.h"
-
-#define UDP_BUF_SIZE 1500
 
 Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
                        string _hostname, string _port, options_t _options,
@@ -57,7 +54,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     evutil_socket_t fd;
     if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
       DIE("socket()");
-    
+
     struct sockaddr_in sin;
     sin.sin_family = AF_INET;
     sin.sin_port = htons(atoi(port.c_str()));
@@ -69,8 +66,15 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)))
       DIE("connect()");
 
-    ev = event_new(base, fd, EV_READ | EV_WRITE, udp_event_cb, this);
+    ev = event_new(base, fd, EV_READ | EV_PERSIST, udp_event_cb, this);
+    read_state = IDLE;
+    // D("UDP socket %s:%s writable.", hostname.c_str(), port.c_str());
+    memset(udpHdr, 0, sizeof(udpHdr));
+    udpHdr[5] = 1;    // want to send only 1 datagram
     event_add(ev, NULL);
+
+    read = evbuffer_new();
+    write = evbuffer_new();
   }
 
   timer = evtimer_new(base, timer_cb, this);
@@ -87,6 +91,8 @@ Connection::~Connection() {
   else {
     close(event_get_fd(ev));
     event_free(ev);
+    evbuffer_free(read);
+    evbuffer_free(write);
   }
 
   delete iagen;
@@ -103,7 +109,6 @@ void Connection::reset() {
   write_state = INIT_WRITE;
   stats = ConnectionStats(stats.sampling);
 }
-
 
 void Connection::issue_sasl() {
   read_state = WAITING_FOR_SASL;
@@ -156,15 +161,27 @@ void Connection::issue_get(const char* key, double now) {
     binary_header_t h = {0x80, CMD_GET, htons(keylen),
                        0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
                        htonl(keylen) };
-
-    bufferevent_write(bev, &h, 24); // size does not include extras
-    bufferevent_write(bev, key, keylen);
-    l = 24 + keylen;
-  } else {
     if (options.udp) {
-      char buf[1025];
-      l = sprintf(&buf[0], "get %s\r\n", key);
-      send(event_get_fd(ev), &buf[0], l, 0);
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
+      evbuffer_add(write, &h, 24);  // size does not include extras
+      evbuffer_add(write, key, keylen);
+      l = sizeof(udpHdr) + 24 + keylen;
+
+      evbuffer_write(write, event_get_fd(ev));
+    }
+    else {
+      bufferevent_write(bev, &h, 24); // size does not include extras
+      bufferevent_write(bev, key, keylen);
+      l = 24 + keylen;
+    }
+  } else {
+    char getHdr[] = "get %s\r\n";
+    if (options.udp) {
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
+      l = sizeof(udpHdr) + evbuffer_add_printf(write, getHdr,
+                                key);
+
+      evbuffer_write(write, event_get_fd(ev));
     }
     else l = evbuffer_add_printf(bufferevent_get_output(bev), "get %s\r\n", key);
   }
@@ -198,49 +215,43 @@ void Connection::issue_set(const char* key, const char* value, int length,
                         htonl(keylen + 8 + length)};
 
     if (options.udp) {
-      char buf[UDP_BUF_SIZE];      // buffer overflow here?  check for max...
-      memset(buf, 0, 8);   // zero UDP pseudoheader portion
-      buf[5] = 1;          // we want to send only 1 datagram
-      l = 8;
-      memcpy(&buf[8], &h, 32);
-      l += 32;
-      memcpy(&buf[l], key, keylen);
-      l += keylen;
-      memcpy(&buf[l], value, length);
-      l += length;
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
+      evbuffer_add(write, &h, 32);  // With extras
+      evbuffer_add(write, key, keylen);
+      evbuffer_add(write, value, length);
+      l = sizeof(udpHdr) + sizeof(h) + keylen + length;
 
-      send(event_get_fd(ev), &buf, l, 0);
+      evbuffer_write(write, event_get_fd(ev));
     }
     else {
       bufferevent_write(bev, &h, 32); // With extras
       bufferevent_write(bev, key, keylen);
       bufferevent_write(bev, value, length);
+      l = 24 + h.body_len;
     }
-    l = 24 + h.body_len;
   }
   else {
     char setHdr[] = "set %s 0 0 %d\r\n";
-    // default data length 200 bytes
+
     if (options.udp) {
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
 
-      char buf[UDP_BUF_SIZE];
-      memset(buf, 0, 8);
-      buf[5] = 1;
-      l = 8 + sprintf(&buf[8], setHdr, key, length);
-      memcpy(&buf[l], value, length);
-      l += length;
-      memcpy(&buf[l], "\r\n", 2);
-      l += 2;
+      l = sizeof(udpHdr) + evbuffer_add_printf(write, setHdr,
+                                key, length);
 
-     send(event_get_fd(ev), &buf, l, 0);
+      evbuffer_add(write, value, length);
+      evbuffer_add(write, "\r\n", 2);
+
+      evbuffer_write(write, event_get_fd(ev));
     }
     else {
       l = evbuffer_add_printf(bufferevent_get_output(bev),
                                 setHdr, key, length);
       bufferevent_write(bev, value, length);
       bufferevent_write(bev, "\r\n", 2);
-      l += length + 2;
     }
+
+    l += length + 2;
   }
 
   if (read_state != LOADING) stats.tx_bytes += l;
@@ -411,14 +422,17 @@ void Connection::bev_callback(short events) {
 }
 
 void Connection::read_callback() {
-  /*TEST TEST TEST */
-  char buff[UDP_BUF_SIZE];
-  memset(buff, 0, UDP_BUF_SIZE);
-  ssize_t recsize = recv(event_get_fd(ev), buff, 16, 0);
-  printf("received %d bytes... string: %s\n", recsize, buff);
+  struct evbuffer *input;
+  if (options.udp) {
+    evbuffer_read(read, event_get_fd(ev), 2000);
+    // if (!evbuffer_get_length(read)) return;  // nothing to process
+    // drain the read buffer for now...
+    // TODO: parse returned pseudoheader, organize
+    evbuffer_drain(read, 8);
+    input = read;
+  }
+  else input = bufferevent_get_input(bev);
 
-
-  struct evbuffer *input = bufferevent_get_input(bev);
 #if USE_CACHED_TIME
   struct timeval now_tv;
   event_base_gettimeofday_cached(base, &now_tv);
@@ -672,26 +686,32 @@ bool Connection::consume_binary_response(evbuffer *input) {
 }
 
 void Connection::udp_callback(short events) {
-  /*
-  printf("Got an event on socket [?]:%s%s%s%s\n",
+ /* 
+  printf("Got an event on socket [%d]:%s%s%s%s\n",
+    event_get_fd(ev),
     (events&EV_TIMEOUT) ? " timeout" : "",
     (events&EV_READ)    ? " read" : "",
     (events&EV_WRITE)   ? " write" : "",
     (events&EV_SIGNAL)  ? " signal" : ""
     );
-    */
-  if ((events & EV_WRITE) && !(events & EV_READ))
-    D("Connected to %s:%s. (writable)", hostname.c_str(), port.c_str());
-    /* ALSO need to implement SASL for UDP here. */
-    //if (events & BEV_EVENT_CONNECTED) {
-      //D("Connected to %s:%s.", hostname.c_str(), port.c_str());
-  read_state = IDLE;
+
+  // if (events & EV_WRITE && connected && !(events & EV_READ)) {
+  //   return;
+  // }
+
+  */
+    // ALSO need to implement SASL for UDP here.
 
   /* UDP connections must fire the read callback manually - 
-     for TCP connections, bufferevent has its own read callback */
-  if (events & EV_READ) read_callback();
+     for TCP connections, bufferevent has its own read callback. */
+  if (events & EV_READ) {
+    read_callback();
+  }
 
-  event_add(ev, NULL);
+
+  // DEBUG: use EV_PERSIST?
+  // if (loader_completed < options.records) event_add(ev, NULL);
+  // event_add(ev, NULL);
 }
 
 void Connection::write_callback() {}
