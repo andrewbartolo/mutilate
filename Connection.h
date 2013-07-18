@@ -72,6 +72,7 @@ public:
   void drive_write_machine(double now = 0.0);
 
   void start_loading();
+  void drive_rate_control();
 
   void reset();
   void issue_sasl();
@@ -88,6 +89,7 @@ public:
   options_t options;
 
   std::queue<Operation> op_queue;
+  int loader_issued, loader_completed;
 
 private:
   struct event_base *base;
@@ -98,6 +100,7 @@ private:
   struct evbuffer *read;  // UDP only
   struct evbuffer *write; // UDP only
   char udpHdr[8];         // UDP only
+  bool issuedAll;       // UDP only - MAKE THIS AN ENUM
 
   struct event *timer;  // Used to control inter-transmission time.
   //  double lambda;
@@ -108,7 +111,6 @@ private:
   int data_length;  // When waiting for data, how much we're peeking for.
 
   // Parameters to track progress of the data loader.
-  int loader_issued, loader_completed;
 
   Generator *valuesize;
   Generator *keysize;

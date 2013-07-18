@@ -49,6 +49,10 @@ option "moderate" - "Enforce a minimum delay of ~1/lambda between requests."
 
 option "noload" - "Skip database loading."
 option "loadonly" - "Load database and then exit."
+option "loader_chunk" L "Upon loading start, number of set requests to \
+issue without waiting for response." int default="1024"
+option "rate_delay" - "Number of microseconds to pause between send \
+requests (UDP only)." int default="0"
 
 option "blocking" B "Use blocking epoll().  May increase latency."
 option "no_nodelay" - "Don't use TCP_NODELAY."

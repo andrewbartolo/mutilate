@@ -430,13 +430,15 @@ int main(int argc, char **argv) {
   //  if (args.keysize_arg < MINIMUM_KEY_LENGTH)
   //    DIE("--keysize must be >= %d", MINIMUM_KEY_LENGTH);
   if (args.connections_arg < 1 || args.connections_arg > MAXIMUM_CONNECTIONS)
-    DIE("--connections must be in range [1, %d]", MAXIMUM_CONNECTIONS);
+    DIE("--connections must be >= 1 and <= %d", MAXIMUM_CONNECTIONS);
   //  if (get_distribution(args.iadist_arg) == -1)
   //    DIE("--iadist invalid: %s", args.iadist_arg);
   if (!args.server_given && !args.agentmode_given)
     DIE("--server or --agentmode must be specified.");
-  if (args.udp_given && !args.noload_given)
-    DIE("--udp loading not supported; use --noload");
+  if (args.loader_chunk_arg <= 0 || args.loader_chunk_arg > args.records_arg)
+    DIE("--loader_chunk must be >= 0 and <= %d", args.records_arg);
+  if (!args.udp_given && args.rate_delay_given)
+    DIE("--rate_delay not supported for TCP; use --udp");
 
   // TODO: Discover peers, share arguments.
 
@@ -837,7 +839,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
           restart = true;
 
       if (restart) continue;
-      else break;
+       else break;
     }
   }
 
@@ -845,14 +847,17 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   if (!options.noload) {
     V("Loading database.");
 
-    for (auto c: server_lead) c->start_loading();
+    for (auto c: server_lead)
+      c->start_loading();
 
-    // Wait for all Connections to become IDLE.
+  // Wait for all Connections to become IDLE.
+
     while (1) {
       // FIXME: If all connections become ready before event_base_loop
       // is called, this will deadlock.
-
+      // printf("FIRST\n");
       event_base_loop(base, EVLOOP_ONCE);
+      // printf("SECOND\n");      
 
       bool restart = false;
      for (Connection *conn: connections)
@@ -863,6 +868,8 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       else break;
     }
   }
+
+  printf("issued: %d, completed: %d\n", server_lead[0]->loader_issued, server_lead[0]->loader_completed);
 
   if (options.loadonly) {
     evdns_base_free(evdns, 0);
@@ -930,22 +937,22 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     if (restart) {
 
-    // Wait for all Connections to become IDLE.
-    while (1) {
-      // FIXME: If there were to use EVLOOP_ONCE and all connections
-      // become ready before event_base_loop is called, this will
-      // deadlock.  We should check for IDLE before calling
-      // event_base_loop.
-      event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
+      // Wait for all Connections to become IDLE.
+      while (1) {
+        // FIXME: If there were to use EVLOOP_ONCE and all connections
+        // become ready before event_base_loop is called, this will
+        // deadlock.  We should check for IDLE before calling
+        // event_base_loop.
+        event_base_loop(base, EVLOOP_ONCE); // EVLOOP_NONBLOCK);
 
-      bool restart = false;
-      for (Connection *conn: connections)
-        if (conn->read_state != Connection::IDLE)
-          restart = true;
+        bool restart = false;
+        for (Connection *conn: connections)
+          if (conn->read_state != Connection::IDLE)
+            restart = true;
 
-      if (restart) continue;
-      else break;
-    }
+        if (restart) continue;
+        else break;
+      }
     }
 
     //    options.time = old_time;
@@ -957,7 +964,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
     if (master) V("Warmup stop.");
   }
-
 
   // FIXME: Synchronize start_time here across threads/nodes.
   pthread_barrier_wait(&barrier);
@@ -989,13 +995,15 @@ void do_mutilate(const vector<string>& servers, options_t& options,
   for (Connection *conn: connections) {
     conn->start_time = start;
     conn->drive_write_machine(); // Kick the Connection into motion.
-  }
+  }  
 
   //  V("Start = %f", start);
 
   // Main event loop.
   while (1) {
+    // printf("FIRST\n");
     event_base_loop(base, loop_flag);
+    // printf("SECOND\n");
 
     //#if USE_CLOCK_GETTIME
     //    now = get_time();
@@ -1089,6 +1097,8 @@ void args_to_options(options_t* options) {
   options->update = args.update_arg;
   options->time = args.time_arg;
   options->loadonly = args.loadonly_given;
+  options->loader_chunk = args.loader_chunk_arg;
+  options->rate_delay = args.rate_delay_arg;
   options->depth = args.depth_arg;
   options->no_nodelay = args.no_nodelay_given;
   options->noload = args.noload_given;

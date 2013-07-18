@@ -9,7 +9,8 @@
 
 #define MAX_SAMPLES 100000
 
-#define LOADER_CHUNK 1024
+// this was made a command-line option
+// #define LOADER_CHUNK 1024
 
 extern char random_char[];
 extern gengetopt_args_info args;

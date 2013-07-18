@@ -28,6 +28,8 @@ typedef struct {
   double update;
   int time;
   bool loadonly;
+  int loader_chunk;
+  int rate_delay;
   int depth;
   bool no_nodelay;
   bool noload;

@@ -66,6 +66,13 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     if (connect(fd, (struct sockaddr *)&sin, sizeof(sin)))
       DIE("connect()");
 
+    int n = 1024 * 1024;
+    if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &n, sizeof(n)) != -1)
+      printf("Increased RCVBUF size\n");
+
+    // if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &n, sizeof(n)) != -1)
+    //   printf("Increased SNDBUF size\n");
+
     ev = event_new(base, fd, EV_READ | EV_PERSIST, udp_event_cb, this);
     read_state = IDLE;
     // D("UDP socket %s:%s writable.", hostname.c_str(), port.c_str());
@@ -75,6 +82,8 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
     read = evbuffer_new();
     write = evbuffer_new();
+
+    issuedAll = false;
   }
 
   timer = evtimer_new(base, timer_cb, this);
@@ -116,7 +125,7 @@ void Connection::issue_sasl() {
   string username = string(options.username);
   string password = string(options.password);
 
-  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, 0, 0, 0, 0};
+  binary_header_t header = {0x80, CMD_SASL, 0, 0, 0, {0}, 0, 0, 0};
   header.key_len = htons(5);
   header.body_len = htonl(6 + username.length() + 1 + password.length());
 
@@ -159,7 +168,7 @@ void Connection::issue_get(const char* key, double now) {
   if (options.binary) {
     // each line is 4-bytes
     binary_header_t h = {0x80, CMD_GET, htons(keylen),
-                       0x00, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                       0x00, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
                        htonl(keylen) };
     if (options.udp) {
       evbuffer_add(write, udpHdr, sizeof(udpHdr));
@@ -211,7 +220,7 @@ void Connection::issue_set(const char* key, const char* value, int length,
   if (options.binary) {
     // each line is 4-bytes
     binary_header_t h = { 0x80, CMD_SET, htons(keylen),
-                        0x08, 0x00, htons(0), //TODO(syang0) get actual vbucket?
+                        0x08, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
                         htonl(keylen + 8 + length)};
 
     if (options.udp) {
@@ -424,6 +433,7 @@ void Connection::bev_callback(short events) {
 void Connection::read_callback() {
   struct evbuffer *input;
   if (options.udp) {
+      // 3. thread barrier: don't release our threads until all agents ready
     evbuffer_read(read, event_get_fd(ev), 2000);
     // if (!evbuffer_get_length(read)) return;  // nothing to process
     // drain the read buffer for now...
@@ -618,7 +628,8 @@ void Connection::read_callback() {
         D("Finished loading.");
         read_state = IDLE;
       } else {
-        while (loader_issued < loader_completed + LOADER_CHUNK) {
+        // printf("issued: %d; completed: %d\n", loader_issued, loader_completed);
+        while (loader_issued < loader_completed + options.loader_chunk) {
           if (loader_issued >= options.records) break;
 
           char key[256];
@@ -632,6 +643,11 @@ void Connection::read_callback() {
           loader_issued++;
         }
       }
+
+      // if (options.udp && loader_issued == options.records) {
+      //   D("Finished loading.");
+      //   read_state = IDLE;
+      // }
 
       break;
 
@@ -675,7 +691,7 @@ bool Connection::consume_binary_response(evbuffer *input) {
   if (unlikely(h->opcode == CMD_SASL)) {
     if (h->status == RESP_OK) {
       V("SASL authentication succeeded");
-    } else {
+    } else {;
       DIE("SASL authentication failed");
     }
   }
@@ -686,7 +702,7 @@ bool Connection::consume_binary_response(evbuffer *input) {
 }
 
 void Connection::udp_callback(short events) {
- /* 
+ /*
   printf("Got an event on socket [%d]:%s%s%s%s\n",
     event_get_fd(ev),
     (events&EV_TIMEOUT) ? " timeout" : "",
@@ -694,19 +710,36 @@ void Connection::udp_callback(short events) {
     (events&EV_WRITE)   ? " write" : "",
     (events&EV_SIGNAL)  ? " signal" : ""
     );
+  //*/
 
-  // if (events & EV_WRITE && connected && !(events & EV_READ)) {
-  //   return;
-  // }
-
-  */
+  if (events & EV_READ) read_callback();
+    // printf("read state: %d; write state: %d\n", read_state, write_state);
     // ALSO need to implement SASL for UDP here.
+   // printf("read_state: %d\n", (int)read_state);
 
   /* UDP connections must fire the read callback manually - 
      for TCP connections, bufferevent has its own read callback. */
-  if (events & EV_READ) {
-    read_callback();
-  }
+  // if (events & EV_READ && !issuedAll) {
+  //   printf("NOT issued all\n");
+  //   loader_completed++;
+  //   pop_op();
+  // }
+  //   // loader_completed++;
+  //   // pop_op();
+    // printf("made it here")
+  //   //read_callback();
+  // else if (events & EV_READ && issuedAll) {
+  //   printf("HHDHDHDH\n");
+  //   read_callback();
+  // }
+  // else if (events & EV_READ && read_state == IDLE) {
+  //   printf("Got here...\n");
+  //   read_callback();
+  // }
+
+  // if (events & EV_TIMEOUT) {
+  //   D("packet dropped; event timeout");
+  // }
 
 
   // DEBUG: use EV_PERSIST?
@@ -752,8 +785,13 @@ void Connection::start_loading() {
   read_state = LOADING;
   loader_issued = loader_completed = 0;
 
-  for (int i = 0; i < LOADER_CHUNK; i++) {
+  for (int i = 0; i < options.loader_chunk; i++) {
     if (loader_issued >= options.records) break;
+
+    // if (options.udp) {                // optimized out?
+    //   usleep(options.rate_delay);
+    //   event_base_loop(base, EVLOOP_NONBLOCK);
+    // }
 
     char key[256];
     int index = lrand48() % (1024 * 1024);
@@ -764,4 +802,23 @@ void Connection::start_loading() {
     issue_set(key, &random_char[index], valuesize->generate());
     loader_issued++;
   }
+
+  // if (options.udp) {
+  //   read_state = IDLE;
+  //   issuedAll = true;
+  // }
 }
+
+// void Connection::drive_rate_control() {
+//   for (int i = loader_issued; i < options.records; i++) {
+//     // usleep(10);   // if options.rate given?
+//     char key[256];
+//     int index = lrand48() % (1024 * 1024);
+//     string keystr = keygen->generate(loader_issued);
+//     strcpy(key, keystr.c_str());
+//     issue_set(key, &random_char[index], valuesize->generate());
+//     loader_issued++;
+//   }
+
+//   read_state = IDLE;
+// }

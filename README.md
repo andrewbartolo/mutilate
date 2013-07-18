@@ -104,6 +104,10 @@ Command-line Options
                                  (default=`exponential')
           --noload             Skip database loading.
           --loadonly           Load database and then exit.
+      -L, --loader_chunk      Upon loading start, number of set requests to
+                                issue without waiting for response.  (default=`1024') 
+          --rate_delay        Number of microseconds to pause between send requests
+                                (UDP only).  (default=`0')
       -B, --blocking           Use blocking epoll().  May increase latency.
       -D, --no_nodelay         Don't use TCP_NODELAY.
       -w, --warmup=INT         Warmup time before starting measurement.
