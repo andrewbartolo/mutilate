@@ -21,6 +21,10 @@ typedef struct {
   //  int valuesize;
   char ia[32];
 
+  // for --ratio
+  bool useRatio;
+  int set_ratio, get_ratio, del_ratio;
+
   // qps_per_connection
   // iadist
 

@@ -47,6 +47,7 @@ public:
     WAITING_FOR_GET_DATA,
     WAITING_FOR_END,
     WAITING_FOR_SET,
+    WAITING_FOR_DELETE,
     MAX_READ_STATE,
   };
 
@@ -66,6 +67,8 @@ public:
   void issue_get(const char* key, double now = 0.0);
   void issue_set(const char* key, const char* value, int length,
                  double now = 0.0);
+  void issue_delete(const char *key, double now = 0.0);
+
   void issue_something(double now = 0.0);
   void pop_op();
   bool check_exit_condition(double now = 0.0);
@@ -86,10 +89,11 @@ public:
 
   void set_priority(int pri);
 
+  void drain_op_queue();
+
   options_t options;
 
   std::queue<Operation> op_queue;
-  int loader_issued, loader_completed;
 
 private:
   struct event_base *base;
@@ -100,7 +104,7 @@ private:
   struct evbuffer *read;  // UDP only
   struct evbuffer *write; // UDP only
   char udpHdr[8];         // UDP only
-  bool issuedAll;       // UDP only - MAKE THIS AN ENUM
+  struct timeval timeout; // UDP only
 
   struct event *timer;  // Used to control inter-transmission time.
   //  double lambda;
@@ -111,6 +115,11 @@ private:
   int data_length;  // When waiting for data, how much we're peeking for.
 
   // Parameters to track progress of the data loader.
+  int loader_issued, loader_completed;
+
+  // Parameters to track progress of second-stage operations
+  int post_load_issued, ratio_sum;
+  char *bitset;
 
   Generator *valuesize;
   Generator *keysize;

@@ -98,6 +98,8 @@ Command-line Options
       -d, --depth=INT          Maximum depth to pipeline requests.  (default=`1')
       -R, --roundrobin         Assign threads to servers in round-robin fashion.
                                  By default, each thread connects to every server.
+          --ratio              After loading, issue <set>:<get>:<delete> requests. 
+                                  Note that this option overrides --update.
       -i, --iadist=STRING      Inter-arrival distribution (distribution).  Note:
                                  The distribution will automatically be adjusted to
                                  match the QPS given by --qps.

@@ -68,7 +68,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
 
     int n = 1024 * 1024;
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &n, sizeof(n)) != -1)
-      printf("Increased RCVBUF size\n");
+      V("Increased RCVBUF size");
 
     // if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &n, sizeof(n)) != -1)
     //   printf("Increased SNDBUF size\n");
@@ -78,12 +78,20 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     // D("UDP socket %s:%s writable.", hostname.c_str(), port.c_str());
     memset(udpHdr, 0, sizeof(udpHdr));
     udpHdr[5] = 1;    // want to send only 1 datagram
-    event_add(ev, NULL);
+
+    timeout = {3, 0};
+    event_add(ev, &timeout);
 
     read = evbuffer_new();
     write = evbuffer_new();
+  }
 
-    issuedAll = false;
+  if (options.useRatio) {
+    post_load_issued = 0;
+    ratio_sum = options.set_ratio + options.get_ratio + options.del_ratio;
+    int bytesNeeded = (options.records / 8) + !!(options.records % 8);
+    // type-safe... somewhat
+    bitset = new char[bytesNeeded]();
   }
 
   timer = evtimer_new(base, timer_cb, this);
@@ -266,6 +274,74 @@ void Connection::issue_set(const char* key, const char* value, int length,
   if (read_state != LOADING) stats.tx_bytes += l;
 }
 
+void Connection::issue_delete(const char* key, double now) {
+  Operation op;
+  int l;
+  uint16_t keylen = strlen(key); 
+
+#if HAVE_CLOCK_GETTIME
+  op.start_time = get_time_accurate();
+#else
+  if (now == 0.0) {
+#if USE_CACHED_TIME
+    struct timeval now_tv;
+    event_base_gettimeofday_cached(base, &now_tv);
+
+    op.start_time = tv_to_double(&now_tv);
+#else
+    op.start_time = get_time();
+#endif
+  } else {
+    op.start_time = now;
+  }
+#endif
+
+  op.type = Operation::DELETE;
+  op.key = string(key);
+
+  op_queue.push(op);
+
+  if (read_state == IDLE)
+    read_state = WAITING_FOR_DELETE;
+
+  if (options.binary) {
+    // each line is 4-bytes
+    binary_header_t h = {0x80, CMD_DELETE, htons(keylen),
+                       0x00, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
+                       htonl(keylen) };
+                       
+    if (options.udp) {
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
+      evbuffer_add(write, &h, 24);  // size does not include extras
+      evbuffer_add(write, key, keylen);
+      l = sizeof(udpHdr) + 24 + keylen;
+
+      // char foo[500];
+      // memset(foo, 0, 500);
+      // evbuffer_copyout(write, &foo, evbuffer_get_length(write));
+
+      evbuffer_write(write, event_get_fd(ev));
+    }
+    else {
+      bufferevent_write(bev, &h, 24); // size does not include extras
+      bufferevent_write(bev, key, keylen);
+      l = 24 + keylen;
+    }
+  } else {
+    char getHdr[] = "delete %s\r\n";
+    if (options.udp) {
+      evbuffer_add(write, udpHdr, sizeof(udpHdr));
+      l = sizeof(udpHdr) + evbuffer_add_printf(write, getHdr,
+                                key);
+
+      evbuffer_write(write, event_get_fd(ev));
+    }
+    else l = evbuffer_add_printf(bufferevent_get_output(bev), "delete %s\r\n", key);
+  }
+
+  if (read_state != LOADING) stats.tx_bytes += l;
+}
+
 void Connection::issue_something(double now) {
   char key[256];
   // FIXME: generate key distribution here!
@@ -274,11 +350,29 @@ void Connection::issue_something(double now) {
   //  int key_index = lrand48() % options.records;
   //  generate_key(key_index, options.keysize, key);
 
-  if (drand48() < options.update) {
+  //if (!(post_load_issued % 6)) issue_delete(key, now);
+
+  /* Note that useRatio overrides --update. */
+  if (options.useRatio) {
+    int cycleIndex = post_load_issued % ratio_sum;
+
+    if (cycleIndex < options.set_ratio) {
+      int index = lrand48() % (1024 * 1024);
+      issue_set(key, &random_char[index], valuesize->generate(), now);
+    }
+    else if (cycleIndex < options.set_ratio + options.get_ratio)
+      issue_get(key, now);
+    else
+      issue_delete(key, now);
+
+    post_load_issued++;
+  }
+  else if (drand48() < options.update) {
     int index = lrand48() % (1024 * 1024);
     //    issue_set(key, &random_char[index], options.valuesize, now);
     issue_set(key, &random_char[index], valuesize->generate(), now);
-  } else {
+  } 
+  else {
     issue_get(key, now);
   }
 }
@@ -297,11 +391,13 @@ void Connection::pop_op() {
     switch (op.type) {
     case Operation::GET: read_state = WAITING_FOR_GET; break;
     case Operation::SET: read_state = WAITING_FOR_SET; break;
+    case Operation::DELETE: read_state = WAITING_FOR_DELETE; break;
     default: DIE("Not implemented.");
     }
   }
 }
 
+// Right now, timeout is the only way to stop testing.
 bool Connection::check_exit_condition(double now) {
   if (read_state == INIT_READ) return false;
   if (now == 0.0) now = get_time();
@@ -549,6 +645,13 @@ void Connection::read_callback() {
       } else {
         return;
       }
+
+    case WAITING_FOR_DELETE:
+      assert(op_queue.size() > 0);
+      pop_op();
+      drive_write_machine();
+      return;
+
     case WAITING_FOR_END:
       assert(op_queue.size() > 0);
 
@@ -632,6 +735,8 @@ void Connection::read_callback() {
         while (loader_issued < loader_completed + options.loader_chunk) {
           if (loader_issued >= options.records) break;
 
+          if (!(loader_issued % options.loader_chunk)) usleep(options.rate_delay);
+
           char key[256];
           string keystr = keygen->generate(loader_issued);
           strcpy(key, keystr.c_str());
@@ -713,9 +818,21 @@ void Connection::udp_callback(short events) {
   //*/
 
   if (events & EV_READ) read_callback();
+
+  if (events & EV_TIMEOUT && loader_completed != loader_issued) {
+    V("issued: %d; completed: %d", loader_issued, loader_completed);
+    loader_completed = loader_issued;   // HAKCERY
+    // event_remove_timer(ev);
+    // because the above^ line is deprecated?
+    event_del(ev);      // ^ should just remove timer...
+    event_add(ev, NULL);
+    // for (unsigned int i = 0; i < op_queue.size(); i++) op_queue.pop(); 
+    drain_op_queue();
+    read_state = IDLE;
+  }
     // printf("read state: %d; write state: %d\n", read_state, write_state);
     // ALSO need to implement SASL for UDP here.
-   // printf("read_state: %d\n", (int)read_state);
+   // printf("read_state: %d\n", (int)rfead_state);
 
   /* UDP connections must fire the read callback manually - 
      for TCP connections, bufferevent has its own read callback. */
@@ -822,3 +939,10 @@ void Connection::start_loading() {
 
 //   read_state = IDLE;
 // }
+
+void Connection::drain_op_queue() {
+  unsigned int size = op_queue.size();
+  for (unsigned int i = 0; i < size; i++) {
+    op_queue.pop();
+  }
+}

@@ -435,8 +435,8 @@ int main(int argc, char **argv) {
   //    DIE("--iadist invalid: %s", args.iadist_arg);
   if (!args.server_given && !args.agentmode_given)
     DIE("--server or --agentmode must be specified.");
-  if (args.loader_chunk_arg <= 0 || args.loader_chunk_arg > args.records_arg)
-    DIE("--loader_chunk must be >= 0 and <= %d", args.records_arg);
+  if (args.loader_chunk_arg <= 0)
+    DIE("--loader_chunk must be > 0");
   if (!args.udp_given && args.rate_delay_given)
     DIE("--rate_delay not supported for TCP; use --udp");
 
@@ -855,9 +855,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
     while (1) {
       // FIXME: If all connections become ready before event_base_loop
       // is called, this will deadlock.
-      // printf("FIRST\n");
       event_base_loop(base, EVLOOP_ONCE);
-      // printf("SECOND\n");      
 
       bool restart = false;
      for (Connection *conn: connections)
@@ -868,8 +866,6 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       else break;
     }
   }
-
-  printf("issued: %d, completed: %d\n", server_lead[0]->loader_issued, server_lead[0]->loader_completed);
 
   if (options.loadonly) {
     evdns_base_free(evdns, 0);
@@ -1001,9 +997,7 @@ void do_mutilate(const vector<string>& servers, options_t& options,
 
   // Main event loop.
   while (1) {
-    // printf("FIRST\n");
-    event_base_loop(base, loop_flag);
-    // printf("SECOND\n");
+    event_base_loop(base, loop_flag);   // NONBLOCK by default
 
     //#if USE_CLOCK_GETTIME
     //    now = get_time();
@@ -1087,6 +1081,26 @@ void args_to_options(options_t* options) {
     strcpy(options->username, "");
 
   D("options->records = %d", options->records);
+
+
+  if (args.ratio_given) {
+    char *saveptr = NULL;
+    // args.ratio_arg);
+    char *set = strtok_r(args.ratio_arg, ":", &saveptr);
+    char *get = strtok_r(NULL, ":", &saveptr);
+    char *del = strtok_r(NULL, ":", &saveptr);
+    // printf("set: %s; GET: %s; del: %s\n", set, get, del);
+    if (!set || !get || !del) DIE("Malformed ratio given");
+
+    options->set_ratio = atoi(set);
+    options->get_ratio = atoi(get);
+    options->del_ratio = atoi(del);
+    if (!options->set_ratio && !options->get_ratio && !options->del_ratio)
+      DIE("Ratio cannot be 0:0:0");
+    
+    options->useRatio = true;
+  }
+  else options->useRatio = false;
 
   if (!options->records) options->records = 1;
   strcpy(options->keysize, args.keysize_arg);

@@ -40,7 +40,7 @@ env = conf.Finish()
 
 env.Append(CPPFLAGS = ' -O3 -Wall -g')
 #env.Append(CPPFLAGS  = ' -D_GNU_SOURCE -D__STDC_FORMAT_MACROS')
-#env.Append(CPPFLAGS = ' -DUSE_ADAPTIVE_SAMPLER')
+#env.Append(CPPFLAGS = ' -0USE_ADAPTIVE_SAMPLER')
 
 env.Command(['cmdline.cc', 'cmdline.h'], 'cmdline.ggo', 'gengetopt < $SOURCE')
 
