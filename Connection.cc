@@ -86,14 +86,6 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     write = evbuffer_new();
   }
 
-  if (options.useRatio) {
-    post_load_issued = 0;
-    ratio_sum = options.set_ratio + options.get_ratio + options.del_ratio;
-    int bytesNeeded = (options.records / 8) + !!(options.records % 8);
-    // type-safe... somewhat
-    bitset = new char[bytesNeeded]();
-  }
-
   timer = evtimer_new(base, timer_cb, this);
 }
 
@@ -272,6 +264,7 @@ void Connection::issue_set(const char* key, const char* value, int length,
   }
 
   if (read_state != LOADING) stats.tx_bytes += l;
+  loadedKeys.insert(atoll(key));
 }
 
 void Connection::issue_delete(const char* key, double now) {
@@ -342,38 +335,184 @@ void Connection::issue_delete(const char* key, double now) {
   if (read_state != LOADING) stats.tx_bytes += l;
 }
 
+// generate key from loader_issued, possibly?
+// this would be sequential, and therefore possibly bad
 void Connection::issue_something(double now) {
   char key[256];
   // FIXME: generate key distribution here!
   string keystr = keygen->generate(lrand48() % options.records);
   strcpy(key, keystr.c_str());
-  //  int key_index = lrand48() % options.records;
-  //  generate_key(key_index, options.keysize, key);
 
-  //if (!(post_load_issued % 6)) issue_delete(key, now);
+  // int key_index = lrand48() % options.records;
+  // generate_key(key_index, options.keysize, key);
 
-  /* Note that useRatio overrides --update. */
-  if (options.useRatio) {
-    int cycleIndex = post_load_issued % ratio_sum;
+  // if (!(post_load_issued % 6)) issue_delete(key, now);
 
-    if (cycleIndex < options.set_ratio) {
-      int index = lrand48() % (1024 * 1024);
-      issue_set(key, &random_char[index], valuesize->generate(), now);
+  /* Note that use of ratio overrides --update. */
+  if (options.ratioSum) {
+    int cycleIndex = lrand48() % options.ratioSum;
+    // printf("cycleIndex: %d\n", cycleIndex);
+
+    int opToPerform;
+    for (opToPerform = 0; opToPerform < 7; opToPerform++) {
+      cycleIndex -= options.intRatios[opToPerform];
+      if (cycleIndex < 0) break;
     }
-    else if (cycleIndex < options.set_ratio + options.get_ratio)
-      issue_get(key, now);
-    else
-      issue_delete(key, now);
 
-    post_load_issued++;
+    // printf("\t opToPerform: %d\n", opToPerform);
+
+
+   switch(opToPerform) {
+    case 0: {
+      if (absentKeys.empty()) {
+        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
+        issue_get(key, now);
+        return;
+      }
+      key_t keyInQuestion = absentKeys.front();
+      absentKeys.pop();
+      loadedKeys.insert(keyInQuestion); 
+      char key2[256];
+      int index = keyInQuestion % (1024 * 1024);
+      string keystr2 = keygen->generate(keyInQuestion);
+      strcpy(key2, keystr2.c_str());
+    
+    issue_set(key, &random_char[index], valuesize->generate());
+    // loader_issued++;
+
+      ratioStats.sa++;
+    }; break;
+    case 1: {
+      //randomCheck needed...
+      // would generate range [to get from] here
+      if (!loadedKeys.count(atoll(key))){
+        issue_get(key, now);
+        return;
+      }
+      int index = atoll(key) % (1024 * 1024);
+      issue_set(key, &random_char[index], valuesize->generate(), now);
+      ratioStats.slss++; 
+    }; break;
+    case 2: {
+      // randomCheck needed, same as above...
+      issue_get(key, now);
+      ratioStats.slds++; 
+    }; break;
+    case 3: {
+      // this actually does what it's supposed to
+      if (absentKeys.empty()) {
+        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
+        issue_get(key, now);
+        return;
+      }
+      key_t keyInQuestion = absentKeys.front();
+      absentKeys.pop();               // if didn't do this...
+      absentKeys.push(keyInQuestion); // wouldn't even need to do this
+      char key2[256];
+      string keystr2 = keygen->generate(keyInQuestion);
+      strcpy(key2, keystr2.c_str());
+    
+    issue_get(key2, now);
+    // loader_issued++;
+
+      ratioStats.ga++; 
+    }; break;
+    case 4: {
+      if (loadedKeys.count(atoll(key))) {
+        issue_get(key, now);
+        return;
+      }
+      // dummy below, not above
+      issue_get(key, now);
+      ratioStats.gl++; 
+    }; break;
+    case 5: {
+      // this actually does what it's supposed to
+      if (absentKeys.empty()) {
+        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
+        issue_get(key, now);
+        return;
+      }
+      key_t keyInQuestion = absentKeys.front();
+      absentKeys.pop();               // if didn't do this...
+      absentKeys.push(keyInQuestion); // wouldn't even need to do this
+      char key2[256];
+      string keystr2 = keygen->generate(keyInQuestion);
+      strcpy(key2, keystr2.c_str());
+    
+    issue_delete(key2, now);
+    // loader_issued++;
+
+      ratioStats.da++; 
+    }; break;
+    case 6: {
+      if (loadedKeys.count(atoll(key))) {
+        issue_delete(key, now);
+        absentKeys.push(atoll(key)); 
+        return;
+      }
+      issue_get(key, now);
+      ratioStats.dl++; 
+    }; break;
+  }
+
+  // NOTE - right now, says nothing about what was _actually_ issued
+  printf("%d %d %d %d %d %d %d\n", ratioStats.sa, ratioStats.slss,
+    ratioStats.slds, ratioStats.ga, ratioStats.gl, ratioStats.da,
+    ratioStats.dl);
+
+   // issue_get(key, now);
+    // printf("weightedRandomOpIndex: %d", weightedRandomOpIndex);
+
+    // int cycleIndex = post_load_issued % options.ratio.ratio_sum;
+    // int cycleIndex = lrand48() % options.ratio.ratio_sum;
+
+    // // if (!bitset[atoi(key)]) printf("key %d NOT set\n", atoi(key));
+    // // printf("bitvector at %d: %d\n", atoi(key), (bool)bitset[atoi(key)]);
+
+    // int selectionIndex = options.ratio.set_new;
+    // if (cycleIndex<  selectionIndex) {
+    //   // int index = lrand48() % (1024 * 1024);
+    //   int index = atoi(key) % (1024 * 1024);
+    //   issue_set(key, &random_char[index], valuesize->generate(), now);
+    // }
+    // selectionIndex += options.ratio.set_existing_same_size;
+    // else if (cycleIndex < selectionIndex) {
+
+    // }
+    // selectionIndex += options.ratio.set_existing_different_size;
+    // else if (cycleIndex < selectionIndex) {
+
+    // }
+    // selectionIndex += options.ratio.get_new;
+    // else if (cycleIndex < selectionIndex) {
+
+    // }
+    // selectionIndex += options.ratio.get_existing;
+    // else if (cycleIndex < selectionIndex) {
+    //   issue_get(key, now);
+    // }
+    // selectionIndex += options.ratio.del_new;
+    // else if (cycleIndex < selectionIndex) {
+
+    // }
+    // else {
+    //   // must be delete_existing
+    //   issue_delete(key, now);
+    // }
+
+    // post_load_issued++;
   }
   else if (drand48() < options.update) {
-    int index = lrand48() % (1024 * 1024);
+    // int index = lrand48() % (1024 * 1024);
+    int index = atoi(key) % (1024 * 1024);
     //    issue_set(key, &random_char[index], options.valuesize, now);
     issue_set(key, &random_char[index], valuesize->generate(), now);
   } 
   else {
     issue_get(key, now);
+    // and then use the key to get a pos within random_char[] to check
+    // (what Shingo mentioned)
   }
 }
 
@@ -740,7 +879,8 @@ void Connection::read_callback() {
           char key[256];
           string keystr = keygen->generate(loader_issued);
           strcpy(key, keystr.c_str());
-          int index = lrand48() % (1024 * 1024);
+          // int index = lrand48() % (1024 * 1024);
+          int index = atoi(key) % (1024 * 1024);
           //          generate_key(loader_issued, options.keysize, key);
           //          issue_set(key, &random_char[index], options.valuesize);
           issue_set(key, &random_char[index], valuesize->generate());
@@ -911,9 +1051,13 @@ void Connection::start_loading() {
     // }
 
     char key[256];
-    int index = lrand48() % (1024 * 1024);
+    // int index = lrand48() % (1024 * 1024);
+    int index = atoi(key) % (1024 * 1024);
+    // printf("loader_issued: %d; random_char[%d]\n", loader_issued, index);
     string keystr = keygen->generate(loader_issued);
     strcpy(key, keystr.c_str());
+
+    
           //    generate_key(loader_issued, options.keysize, key);
     //    issue_set(key, &random_char[index], options.valuesize);
     issue_set(key, &random_char[index], valuesize->generate());

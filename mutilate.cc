@@ -1084,23 +1084,81 @@ void args_to_options(options_t* options) {
 
 
   if (args.ratio_given) {
-    char *saveptr = NULL;
-    // args.ratio_arg);
-    char *set = strtok_r(args.ratio_arg, ":", &saveptr);
-    char *get = strtok_r(NULL, ":", &saveptr);
-    char *del = strtok_r(NULL, ":", &saveptr);
-    // printf("set: %s; GET: %s; del: %s\n", set, get, del);
-    if (!set || !get || !del) DIE("Malformed ratio given");
 
-    options->set_ratio = atoi(set);
-    options->get_ratio = atoi(get);
-    options->del_ratio = atoi(del);
-    if (!options->set_ratio && !options->get_ratio && !options->del_ratio)
-      DIE("Ratio cannot be 0:0:0");
-    
-    options->useRatio = true;
+    char *saveptr = NULL;
+    char *tok = strtok_r(args.ratio_arg, ":", &saveptr);
+    int intRatios[] = {0,0,0,0,0,0,0};
+
+    int numArgs, ratioSum = 0;
+    for (numArgs = 0; tok; numArgs++) {
+      int intTok = atoi(tok);
+      intRatios[numArgs] = intTok;
+      ratioSum += intTok;
+      tok = strtok_r(NULL, ":", &saveptr);
+    }
+    // rudimentary error checking; not extremely robust
+    if (numArgs != 3 && numArgs != 6 && numArgs != 7) {
+      DIE("Malformed ratio given");
+    }
+
+    bool allZeros = true;
+    for (int i = 0; i < numArgs; i++) {
+      if (intRatios[i] != 0) {
+        allZeros = false;
+        break;
+      }
+    }
+    if (allZeros) DIE("Ratio cannot be comprised of all zeros");
+
+    // double intRatio[7] = {0,0,0,0,0,0,0};
+    // FIXME: float roundoff error here
+    // for (int i = 0; i < numArgs; i++) {
+        // floatProbabilities[i] = ((double)intRatios[i] / ratioSum);
+    // }
+    for (int i = 0; i < 7; i++) {
+      options->intRatios[i] = 0;
+    }   // could just memset, but w/e
+    options->ratioSum = ratioSum;
+    // memset(options->intRatios, 0, sizeof(options->intRatios));
+    // more type-safe... barely:
+
+    int offset = 0;
+    // options->ratio.components[0] = atoi(rawRatio[0]);
+    options->intRatios[0] =  intRatios[0];
+    switch(numArgs) {
+      case 3:
+        options->intRatios[4] = intRatios[1];
+        options->intRatios[6] = intRatios[2];
+        break;
+      case 6:
+      case 7:
+        options->intRatios[1] = intRatios[1];
+        if (numArgs == 7) {
+          options->intRatios[2] = intRatios[2];
+          offset = 1;
+        }
+        options->intRatios[3] = intRatios[2 + offset];
+        options->intRatios[4] = intRatios[3 + offset];
+        options->intRatios[5] = intRatios[4 + offset];
+        options->intRatios[6] = intRatios[5 + offset];
+        break;
+      default: DIE("Malformed ratio given");
+    }
+
+    // char *set = strtok_r(args.ratio_arg, ":", &saveptr);
+    // char *get = strtok_r(NULL, ":", &saveptr);
+    // char *del = strtok_r(NULL, ":", &saveptr);
+    // // printf("set: %s; GET: %s; del: %s\n", set, get, del);
+    // if (!set || !get || !del) DIE("Malformed ratio given");
+
+    // options->set_ratio = atoi(set);
+    // options->get_ratio = atoi(get);
+    // options->del_ratio = atoi(del);
+    // if (!options->set_ratio && !options->get_ratio && !options->del_ratio)
+    //   // DIE("Ratio cannot be 0:0:0");
+    //   DIE("Ratio cannot be comprised of all zeros");
   }
-  else options->useRatio = false;
+  else options->ratioSum = 0;
 
   if (!options->records) options->records = 1;
   strcpy(options->keysize, args.keysize_arg);

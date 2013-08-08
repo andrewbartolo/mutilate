@@ -1,6 +1,7 @@
 #ifndef CONNECTIONOPTIONS_H
 #define CONNECTIONOPTIONS_H
 
+#include <vector>
 #include "distributions.h"
 
 typedef struct {
@@ -22,8 +23,8 @@ typedef struct {
   char ia[32];
 
   // for --ratio
-  bool useRatio;
-  int set_ratio, get_ratio, del_ratio;
+  int intRatios[7];
+  int ratioSum;
 
   // qps_per_connection
   // iadist

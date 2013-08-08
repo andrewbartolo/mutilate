@@ -2,6 +2,7 @@
 
 #include <queue>
 #include <string>
+#include <unordered_set>
 
 #include <event2/bufferevent.h>
 #include <event2/dns.h>
@@ -114,12 +115,22 @@ private:
 
   int data_length;  // When waiting for data, how much we're peeking for.
 
-  // Parameters to track progress of the data loader.
+  // for --ratio.  keeps track of operations issued.
+  // s - set; g - get; d - delete
+  // a - absent (key not in memcached); l - loaded (key in memcached)
+  // ss - same (value) size; ds - different size (not yet implemented)
+  struct {
+    int sa, slss, slds,
+      ga, gl, da, dl;
+  } ratioStats;
   int loader_issued, loader_completed;
+  
+  typedef key_t uint_t;
+  std::queue<key_t> absentKeys;
+  std::unordered_set<key_t> loadedKeys;
 
   // Parameters to track progress of second-stage operations
-  int post_load_issued, ratio_sum;
-  char *bitset;
+  // int post_load_issued;
 
   Generator *valuesize;
   Generator *keysize;
