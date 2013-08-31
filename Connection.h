@@ -90,6 +90,7 @@ public:
 
   void set_priority(int pri);
 
+  void note_absent_keys();
   void drain_op_queue();
 
   options_t options;
@@ -129,7 +130,7 @@ private:
   std::queue<key_t> absentKeys;
   std::unordered_set<key_t> loadedKeys;
 
-  // Parameters to track progress of second-stage operations
+  // Parameters to tack progress of second-stage operations
   // int post_load_issued;
 
   Generator *valuesize;

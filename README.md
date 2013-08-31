@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 Mutilate
 ========
 
@@ -145,3 +146,7 @@ Command-line Options
     
     [1] Berk Atikoglu et al., Workload Analysis of a Large-Scale Key-Value Store,
         SIGMETRICS 2012
+=======
+mutilate
+========
+>>>>>>> 3ce8e396c54b50f1374da111674bb1ed8dd82652

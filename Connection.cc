@@ -86,6 +86,7 @@ Connection::Connection(struct event_base* _base, struct evdns_base* _evdns,
     write = evbuffer_new();
   }
 
+  srand48(time(NULL));
   timer = evtimer_new(base, timer_cb, this);
 }
 
@@ -165,16 +166,21 @@ void Connection::issue_get(const char* key, double now) {
   if (read_state == IDLE)
     read_state = WAITING_FOR_GET;
 
-  if (options.binary) {
+if (options.binary) {
     // each line is 4-bytes
     binary_header_t h = {0x80, CMD_GET, htons(keylen),
                        0x00, 0x00, {htons(0)}, //TODO(syang0) get actual vbucket?
                        htonl(keylen) };
+                       
     if (options.udp) {
       evbuffer_add(write, udpHdr, sizeof(udpHdr));
       evbuffer_add(write, &h, 24);  // size does not include extras
       evbuffer_add(write, key, keylen);
       l = sizeof(udpHdr) + 24 + keylen;
+
+      // char foo[500];
+      // memset(foo, 0, 500);
+      // evbuffer_copyout(write, &foo, evbuffer_get_length(write));
 
       evbuffer_write(write, event_get_fd(ev));
     }
@@ -338,11 +344,6 @@ void Connection::issue_delete(const char* key, double now) {
 // generate key from loader_issued, possibly?
 // this would be sequential, and therefore possibly bad
 void Connection::issue_something(double now) {
-  char key[256];
-  // FIXME: generate key distribution here!
-  string keystr = keygen->generate(lrand48() % options.records);
-  strcpy(key, keystr.c_str());
-
   // int key_index = lrand48() % options.records;
   // generate_key(key_index, options.keysize, key);
 
@@ -350,8 +351,12 @@ void Connection::issue_something(double now) {
 
   /* Note that use of ratio overrides --update. */
   if (options.ratioSum) {
+    char key[256];
+    // FIXME: generate key distribution here!
+    string keystr = keygen->generate(lrand48() % options.records);
+    strcpy(key, keystr.c_str());
+
     int cycleIndex = lrand48() % options.ratioSum;
-    // printf("cycleIndex: %d\n", cycleIndex);
 
     int opToPerform;
     for (opToPerform = 0; opToPerform < 7; opToPerform++) {
@@ -361,158 +366,122 @@ void Connection::issue_something(double now) {
 
     // printf("\t opToPerform: %d\n", opToPerform);
 
+    // idea = generate the key randomly, check for it, then
+    // while (<<generate new key>>)
+    /*printf("\t\topToPerform: %d\n", opToPerform); */
+    //while (1) {
+      // char key[256];
+      // // \/ would be a distribution
+      // key_t numericKey = lrand48() % options.records;
+      // string cppkey = keygen->generate(numericKey);
+      // strcpy(key, cppkey.c_str());
+      switch(opToPerform) {
+        case 0: {
+          // stop program... for now
+          if (absentKeys.empty()) {
+            DIE("All keys set; cannot set absent key");
+          }
+          key_t keyInQuestion = absentKeys.front();
+          absentKeys.pop();
+          loadedKeys.insert(keyInQuestion);
+          char key2[256];
+          int index = keyInQuestion % (1024 * 1024);
+          string keystr2 = keygen->generate(keyInQuestion);
+          strcpy(key2, keystr2.c_str());
+        
+        issue_set(key, &random_char[index], valuesize->generate());
+        // loader_issued++;
 
-   switch(opToPerform) {
-    case 0: {
-      if (absentKeys.empty()) {
-        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
-        issue_get(key, now);
-        return;
-      }
-      key_t keyInQuestion = absentKeys.front();
-      absentKeys.pop();
-      loadedKeys.insert(keyInQuestion); 
-      char key2[256];
-      int index = keyInQuestion % (1024 * 1024);
-      string keystr2 = keygen->generate(keyInQuestion);
-      strcpy(key2, keystr2.c_str());
-    
-    issue_set(key, &random_char[index], valuesize->generate());
-    // loader_issued++;
+          ratioStats.sa++;
+        }; break;
+        case 1: {
+          ratioStats.slss++;
+          //randomCheck needed...
+          // would generate range [to get from] here
+          if (!loadedKeys.count(atoll(key))){
+            issue_get(key, now);
+            return;
+          }
+          int index = atoll(key) % (1024 * 1024);
+          issue_set(key, &random_char[index], valuesize->generate(), now);
+        }; break;
+        case 2: {
+          ratioStats.slds++;
+          // randomCheck needed, same as above...
+          issue_get(key, now);
+        }; break;
+        case 3: {
+          ratioStats.ga++;
+          // this actually does what it's supposed to
+          if (absentKeys.empty()) {
+            // SKIP_THIS_TURN?  defaulting to issue_get(...)...
+            issue_get(key, now);
+            return;
+          }
+          key_t keyInQuestion = absentKeys.front();
+          absentKeys.pop();               // if didn't do this...
+          absentKeys.push(keyInQuestion); // wouldn't even need to do this
+          char key2[256];
+          string keystr2 = keygen->generate(keyInQuestion);
+          strcpy(key2, keystr2.c_str());
+        
+        issue_get(key2, now);
+        // loader_issued++;
+        }; break;
+        case 4: {
+          ratioStats.gl++;
+          if (loadedKeys.count(atoll(key))) {
+            issue_get(key, now);
+            return;
+          }
+          // dummy below, not above
+          issue_get(key, now);
+        }; break;
+        case 5: {
+          ratioStats.da++;
+          if (absentKeys.empty()) {
+            // SKIP_THIS_TURN?  defaulting to issue_get(...)...
+            issue_get(key, now);
+            return;
+          }
+          key_t keyInQuestion = absentKeys.front();
+          absentKeys.pop();               // if didn't do this...
+          absentKeys.push(keyInQuestion); // wouldn't even need to do this
+          char key2[256];
+          string keystr2 = keygen->generate(keyInQuestion);
+          strcpy(key2, keystr2.c_str());
+        
+        issue_delete(key2, now);
+        // loader_issued++;
 
-      ratioStats.sa++;
-    }; break;
-    case 1: {
-      //randomCheck needed...
-      // would generate range [to get from] here
-      if (!loadedKeys.count(atoll(key))){
-        issue_get(key, now);
-        return;
+        }; break;
+        case 6: {
+          ratioStats.dl++;
+          if (loadedKeys.count(atoll(key))) {
+            issue_delete(key, now);
+            absentKeys.push(atoll(key)); 
+            return;
+          }
+          issue_get(key, now);
+        }; break;
       }
-      int index = atoll(key) % (1024 * 1024);
-      issue_set(key, &random_char[index], valuesize->generate(), now);
-      ratioStats.slss++; 
-    }; break;
-    case 2: {
-      // randomCheck needed, same as above...
-      issue_get(key, now);
-      ratioStats.slds++; 
-    }; break;
-    case 3: {
-      // this actually does what it's supposed to
-      if (absentKeys.empty()) {
-        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
-        issue_get(key, now);
-        return;
-      }
-      key_t keyInQuestion = absentKeys.front();
-      absentKeys.pop();               // if didn't do this...
-      absentKeys.push(keyInQuestion); // wouldn't even need to do this
-      char key2[256];
-      string keystr2 = keygen->generate(keyInQuestion);
-      strcpy(key2, keystr2.c_str());
-    
-    issue_get(key2, now);
-    // loader_issued++;
-
-      ratioStats.ga++; 
-    }; break;
-    case 4: {
-      if (loadedKeys.count(atoll(key))) {
-        issue_get(key, now);
-        return;
-      }
-      // dummy below, not above
-      issue_get(key, now);
-      ratioStats.gl++; 
-    }; break;
-    case 5: {
-      // this actually does what it's supposed to
-      if (absentKeys.empty()) {
-        // SKIP_THIS_TURN?  defaulting to issue_get(...)...
-        issue_get(key, now);
-        return;
-      }
-      key_t keyInQuestion = absentKeys.front();
-      absentKeys.pop();               // if didn't do this...
-      absentKeys.push(keyInQuestion); // wouldn't even need to do this
-      char key2[256];
-      string keystr2 = keygen->generate(keyInQuestion);
-      strcpy(key2, keystr2.c_str());
-    
-    issue_delete(key2, now);
-    // loader_issued++;
-
-      ratioStats.da++; 
-    }; break;
-    case 6: {
-      if (loadedKeys.count(atoll(key))) {
-        issue_delete(key, now);
-        absentKeys.push(atoll(key)); 
-        return;
-      }
-      issue_get(key, now);
-      ratioStats.dl++; 
-    }; break;
+    //}
   }
-
-  // NOTE - right now, says nothing about what was _actually_ issued
-  printf("%d %d %d %d %d %d %d\n", ratioStats.sa, ratioStats.slss,
-    ratioStats.slds, ratioStats.ga, ratioStats.gl, ratioStats.da,
-    ratioStats.dl);
-
-   // issue_get(key, now);
-    // printf("weightedRandomOpIndex: %d", weightedRandomOpIndex);
-
-    // int cycleIndex = post_load_issued % options.ratio.ratio_sum;
-    // int cycleIndex = lrand48() % options.ratio.ratio_sum;
-
-    // // if (!bitset[atoi(key)]) printf("key %d NOT set\n", atoi(key));
-    // // printf("bitvector at %d: %d\n", atoi(key), (bool)bitset[atoi(key)]);
-
-    // int selectionIndex = options.ratio.set_new;
-    // if (cycleIndex<  selectionIndex) {
-    //   // int index = lrand48() % (1024 * 1024);
-    //   int index = atoi(key) % (1024 * 1024);
-    //   issue_set(key, &random_char[index], valuesize->generate(), now);
-    // }
-    // selectionIndex += options.ratio.set_existing_same_size;
-    // else if (cycleIndex < selectionIndex) {
-
-    // }
-    // selectionIndex += options.ratio.set_existing_different_size;
-    // else if (cycleIndex < selectionIndex) {
-
-    // }
-    // selectionIndex += options.ratio.get_new;
-    // else if (cycleIndex < selectionIndex) {
-
-    // }
-    // selectionIndex += options.ratio.get_existing;
-    // else if (cycleIndex < selectionIndex) {
-    //   issue_get(key, now);
-    // }
-    // selectionIndex += options.ratio.del_new;
-    // else if (cycleIndex < selectionIndex) {
-
-    // }
-    // else {
-    //   // must be delete_existing
-    //   issue_delete(key, now);
-    // }
-
-    // post_load_issued++;
-  }
-  else if (drand48() < options.update) {
-    // int index = lrand48() % (1024 * 1024);
-    int index = atoi(key) % (1024 * 1024);
-    //    issue_set(key, &random_char[index], options.valuesize, now);
-    issue_set(key, &random_char[index], valuesize->generate(), now);
-  } 
   else {
-    issue_get(key, now);
-    // and then use the key to get a pos within random_char[] to check
-    // (what Shingo mentioned)
+    char key[256];
+    // FIXME: generate key distribution here!
+    string keystr = keygen->generate(lrand48() % options.records);
+    strcpy(key, keystr.c_str());
+    if (drand48() < options.update) {
+      // int index = lrand48() % (1024 * 1024);
+      // use atoll, not atoi?
+      int index = atoi(key) % (1024 * 1024);
+      //    issue_set(key, &random_char[index], options.valuesize, now);
+      issue_set(key, &random_char[index], valuesize->generate(), now);
+    }
+    else {
+      issue_get(key, now);
+    }
   }
 }
 
@@ -683,7 +652,7 @@ void Connection::read_callback() {
   event_base_gettimeofday_cached(base, &now_tv);
 #endif
 
-  char *buf;
+  char *buf = NULL;
   Operation *op = NULL;
   int length;
   size_t n_read_out;
@@ -777,6 +746,16 @@ void Connection::read_callback() {
 
       if (length >= data_length + 2) {
         // FIXME: Actually parse the value?  Right now we just drain it.
+
+        /*
+        unsigned char* buffer = evbuffer_pullup(input, valuesize->generate());
+        int index = atoi(key) % (1024 * 1024);
+      //    issue_set(key, &random_char[index], options.valuesize, now);
+      issue_set(key, &random_char[index], valuesize->generate(), now);
+      */
+
+
+
         evbuffer_drain(input, data_length + 2);
         read_state = WAITING_FOR_END;
 
@@ -889,11 +868,6 @@ void Connection::read_callback() {
         }
       }
 
-      // if (options.udp && loader_issued == options.records) {
-      //   D("Finished loading.");
-      //   read_state = IDLE;
-      // }
-
       break;
 
     case WAITING_FOR_SASL:
@@ -930,7 +904,7 @@ bool Connection::consume_binary_response(evbuffer *input) {
   // if something other than success, count it as a miss
   if (h->opcode == CMD_GET && h->status) {
       stats.get_misses++;
-  }
+ } 
 
   #define unlikely(x) __builtin_expect((x),0)
   if (unlikely(h->opcode == CMD_SASL)) {
@@ -970,38 +944,9 @@ void Connection::udp_callback(short events) {
     drain_op_queue();
     read_state = IDLE;
   }
-    // printf("read state: %d; write state: %d\n", read_state, write_state);
-    // ALSO need to implement SASL for UDP here.
-   // printf("read_state: %d\n", (int)rfead_state);
 
   /* UDP connections must fire the read callback manually - 
      for TCP connections, bufferevent has its own read callback. */
-  // if (events & EV_READ && !issuedAll) {
-  //   printf("NOT issued all\n");
-  //   loader_completed++;
-  //   pop_op();
-  // }
-  //   // loader_completed++;
-  //   // pop_op();
-    // printf("made it here")
-  //   //read_callback();
-  // else if (events & EV_READ && issuedAll) {
-  //   printf("HHDHDHDH\n");
-  //   read_callback();
-  // }
-  // else if (events & EV_READ && read_state == IDLE) {
-  //   printf("Got here...\n");
-  //   read_callback();
-  // }
-
-  // if (events & EV_TIMEOUT) {
-  //   D("packet dropped; event timeout");
-  // }
-
-
-  // DEBUG: use EV_PERSIST?
-  // if (loader_completed < options.records) event_add(ev, NULL);
-  // event_add(ev, NULL);
 }
 
 void Connection::write_callback() {}
@@ -1063,30 +1008,17 @@ void Connection::start_loading() {
     issue_set(key, &random_char[index], valuesize->generate());
     loader_issued++;
   }
-
-  // if (options.udp) {
-  //   read_state = IDLE;
-  //   issuedAll = true;
-  // }
 }
-
-// void Connection::drive_rate_control() {
-//   for (int i = loader_issued; i < options.records; i++) {
-//     // usleep(10);   // if options.rate given?
-//     char key[256];
-//     int index = lrand48() % (1024 * 1024);
-//     string keystr = keygen->generate(loader_issued);
-//     strcpy(key, keystr.c_str());
-//     issue_set(key, &random_char[index], valuesize->generate());
-//     loader_issued++;
-//   }
-
-//   read_state = IDLE;
-// }
 
 void Connection::drain_op_queue() {
   unsigned int size = op_queue.size();
   for (unsigned int i = 0; i < size; i++) {
     op_queue.pop();
   }
+}
+
+void Connection::note_absent_keys() {
+  for (int i = 0; i < options.records; i++) {
+    absentKeys.push(i);
+  } 
 }

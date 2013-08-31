@@ -866,6 +866,9 @@ void do_mutilate(const vector<string>& servers, options_t& options,
       else break;
     }
   }
+  else {
+    if (options.ratioSum) ; 
+  }
 
   if (options.loadonly) {
     evdns_base_free(evdns, 0);
